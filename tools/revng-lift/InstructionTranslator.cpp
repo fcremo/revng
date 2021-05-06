@@ -504,6 +504,8 @@ void IT::finalizeNewPCMarkers(std::string &CoveragePath) {
   Output << std::hex;
   size_t FixedArgCount = NewPCMarker->arg_size();
 
+  llvm::SmallVector<CallInst *, 4> CallsToRemove;
+
   for (User *U : NewPCMarker->users()) {
     auto *Call = cast<CallInst>(U);
 
@@ -530,9 +532,14 @@ void IT::finalizeNewPCMarkers(std::string &CoveragePath) {
       NewCall->copyMetadata(*Call);
 
       revng_assert(Call->use_empty());
-      Call->eraseFromParent();
+      CallsToRemove.push_back(Call);
+
     }
   }
+
+  for (auto *Call : CallsToRemove)
+    Call->eraseFromParent();
+
   Output << std::dec;
 }
 
