@@ -154,7 +154,7 @@ public:
 
   ~generator() {
     if (m_coroutine) {
-      revng_assert(m_coroutine.done())
+      revng_assert(m_coroutine.done());
       m_coroutine.destroy();
     }
   }
