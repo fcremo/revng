@@ -905,7 +905,7 @@ void CodeGenerator::translate(Optional<uint64_t> RawVirtualAddress) {
 
   // Create main function
   auto *MainType = FT::get(Builder.getVoidTy(),
-                           { SPReg->getType()->getPointerElementType() },
+                           { },
                            false);
   auto *MainFunction = Function::Create(MainType,
                                         Function::ExternalLinkage,
@@ -924,7 +924,13 @@ void CodeGenerator::translate(Optional<uint64_t> RawVirtualAddress) {
   // After the translation we will and use this information to create a call to
   // a helper function.
   // TODO: we need a more elegant solution here
-  auto *Delimiter = Builder.CreateStore(&*MainFunction->arg_begin(), SPReg);
+  auto *Delimiter = llvm::BinaryOperator::Create(
+    llvm::Instruction::BinaryOps::Add,
+    Builder.getInt64(0),
+    Builder.getInt64(0),
+    "",
+    Entry
+  );
   auto *InitEnvInsertPoint = Delimiter;
 
   QuickMetadata QMD(Context);
@@ -998,9 +1004,6 @@ void CodeGenerator::translate(Optional<uint64_t> RawVirtualAddress) {
 
   if (VirtualAddress.isValid()) {
     JumpTargets.registerJT(VirtualAddress, JTReason::GlobalData);
-
-    // Initialize the program counter
-    PCH->initializePC(Builder, VirtualAddress);
   }
 
   OpaqueIdentity OI(TheModule.get());
@@ -1327,6 +1330,47 @@ void CodeGenerator::translate(Optional<uint64_t> RawVirtualAddress) {
                                       *MainFunction,
                                       PCH.get());
   JumpOutHandler.createExternalJumpsHandler();
+
+  // Get the return address where execution will resume when exiting the lifted realm
+  Builder.SetInsertPoint(&*MainFunction->getEntryBlock().begin());
+  auto *StackPointerValue = Builder.CreateLoad(SPReg);
+  auto *StackPointerValueAsPointer = Builder.CreateIntToPtr(
+    StackPointerValue,
+    PCH->getAddressCSV()->getType()
+  );
+  auto *ReturnAddressValue = Builder.CreateLoad(StackPointerValueAsPointer);
+
+  // -- Install the pre-dispatcher, returning execution if the PC is equal to the
+  // -- return address
+
+  BasicBlock *Dispatcher = JumpTargets.dispatcher();
+  BasicBlock *PreDispatcher = BasicBlock::Create(Context,
+                                                 "dispatcher._predispatch",
+                                                 MainFunction);
+  setBlockType(Dispatcher, BlockType::Values::RootDispatcherHelperBlock);
+  Dispatcher->replaceAllUsesWith(PreDispatcher);
+
+  // Exit block
+  BasicBlock *Exit = BasicBlock::Create(Context,
+                                        "dispatcher._exit",
+                                        MainFunction);
+  Builder.SetInsertPoint(Exit);
+  Builder.CreateRetVoid();
+  setBlockType(Exit, BlockType::Values::RootDispatcherHelperBlock);
+
+  // PC comparison block
+  Builder.SetInsertPoint(PreDispatcher);
+  auto *PCValue = PCH->loadJumpablePC(Builder);
+  auto *PCEqualsReturnValue = Builder.CreateICmp(CmpInst::ICMP_EQ, ReturnAddressValue, PCValue);
+  auto *LastInsn = Builder.CreateCondBr(PCEqualsReturnValue, Exit, Dispatcher);
+  setBlockType(PreDispatcher, BlockType::Values::RootDispatcherBlock);
+  // -- Pre-dispatcher end
+
+  // Set the segments as external non initialized variables
+  for (SegmentInfo &Segment : Binary.segments()) {
+    Segment.Variable->setSection("");
+    Segment.Variable->setInitializer(nullptr);
+  }
 
   Variables.finalize();
 

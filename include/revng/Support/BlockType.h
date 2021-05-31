@@ -104,6 +104,11 @@ inline void setBlockType(llvm::Instruction *T, BlockType::Values Value) {
   T->setMetadata(BlockTypeMDName, QMD.tuple(BlockType::getName(Value)));
 }
 
+inline void setBlockType(llvm::BasicBlock *BB, BlockType::Values Value) {
+  auto *T = BB->getTerminator();
+  setBlockType(T, Value);
+}
+
 inline llvm::BasicBlock *
 findByBlockType(llvm::Function *F, BlockType::Values Value) {
   using namespace llvm;

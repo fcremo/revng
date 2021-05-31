@@ -4,6 +4,8 @@
 //
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
+#include <iostream>
+#include <fstream>
 
 #include "revng/ADT/GenericGraph.h"
 #include "revng/FunctionIsolation/PromoteCSVs.h"
@@ -18,6 +20,22 @@ using namespace TypeShrinking;
 char PromoteCSVsPass::ID = 0;
 using Register = RegisterPass<PromoteCSVsPass>;
 static Register X("promote-csvs", "Promote CSVs Pass", true, true);
+static cl::opt<std::string> StackSizeFile("stack-size-map", cl::desc("Comma-separated file specifying stack size of lifted functions"), cl::value_desc("filename"));
+
+static std::map<std::string, int> parseStackSizeMap(std::string &path) {
+  std::map<std::string, int> StackMap;
+  std::ifstream Input(path);
+  std::string Line;
+  while (getline(Input, Line)) {
+    auto sep_pos = Line.rfind(':') + 1;
+    auto tab_pos = Line.find('\t');
+    std::string function_name = Line.substr( sep_pos, tab_pos - sep_pos);
+    int function_size = std::stoi(Line.substr(tab_pos + 1), nullptr, 0);
+    StackMap.insert({function_name, function_size});
+  }
+  Input.close();
+  return StackMap;
+}
 
 // TODO: switch from CallInst to CallBase
 
@@ -293,18 +311,52 @@ void PromoteCSVs::promoteCSVs(Function *F) {
   // corresponding allocas
   BasicBlock &Entry = F->getEntryBlock();
 
+  // Remove stores of the return address to the stack
+  std::vector<llvm::Instruction *> ToRemove;
+  for (auto &BB : *F) {
+    for (auto &I : BB) {
+      if (I.getMetadata("kill-me-with-fire")) {
+        if (I.isSafeToRemove()) {
+          ToRemove.push_back(&I);
+        }
+      }
+    }
+  }
+
+  for (auto *I : ToRemove) {
+    I->eraseFromParent();
+  }
+
   // Get/create initializers
   std::map<Function *, GlobalVariable *> CSVForInitializer;
   std::map<GlobalVariable *, Function *> InitializerForCSV;
+
+  std::set<std::string> Whitelist{
+    "rdi", "rsi", "rdx", "rcx", "r8", "r9",
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
+  };
+
   for (GlobalVariable *CSV : CSVs) {
     // Initialize all allocas with opaque, CSV-specific values
-    Type *CSVType = CSV->getType()->getPointerElementType();
-    auto *Initializer = CSVInitializers.get(CSV->getName(),
-                                            CSVType,
-                                            {},
-                                            Twine("init_") + CSV->getName());
-    CSVForInitializer[Initializer] = CSV;
-    InitializerForCSV[CSV] = Initializer;
+    if (GCBI.isSPReg(CSV)) {
+      FunctionType *HelperToLeakAllocaType = FunctionType::get(
+        IntegerType::getInt8PtrTy(CSV->getContext()),
+        { IntegerType::getInt64Ty(CSV->getContext()) },
+        false
+      );
+      FunctionCallee HelperToLeakAlloca = F->getParent()->getOrInsertFunction("init_spreg", HelperToLeakAllocaType);
+      CSVForInitializer[cast<Function>(HelperToLeakAlloca.getCallee())] = CSV;
+      InitializerForCSV[CSV] = cast<Function>(HelperToLeakAlloca.getCallee());
+    }
+    else if (Whitelist.contains(CSV->getName())) {
+      Type *CSVType = CSV->getType()->getPointerElementType();
+      auto *Initializer = CSVInitializers.get(CSV->getName(),
+                                              CSVType,
+                                              {},
+                                              Twine("init_") + CSV->getName());
+      CSVForInitializer[Initializer] = CSV;
+      InitializerForCSV[CSV] = Initializer;
+    }
   }
 
   // Collect existing initializer calls
@@ -325,6 +377,8 @@ void PromoteCSVs::promoteCSVs(Function *F) {
   auto *Separator = AllocaBuilder.CreateUnreachable();
   IRBuilder<> InitializersBuilder(&Entry, ++Separator->getIterator());
 
+  auto StackSizeMap = parseStackSizeMap(StackSizeFile);
+
   // For each GlobalVariable representing a CSV used in F, create a dedicated
   // alloca and save it in CSVMaps.
   for (GlobalVariable *CSV : CSVs) {
@@ -335,19 +389,48 @@ void PromoteCSVs::promoteCSVs(Function *F) {
     auto *Alloca = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
 
     // Check if already have an initializer
-    CallInst *InitializerCall = nullptr;
-    auto It = InitializerCalls.find(CSV);
-    if (It == InitializerCalls.end()) {
-      Function *Initializer = InitializerForCSV.at(CSV);
-      InitializerCall = InitializersBuilder.CreateCall(Initializer);
-    } else {
-      InitializerCall = It->second;
+    Instruction *InitializeValue = nullptr;
+    if (GCBI.isSPReg(CSV)) {
+      CallInst *TopOfStack;
+
+      int stackFrameSize = 64;
+      auto FunctionName = F->getName();
+      auto FunctionNameWithoutBB = FunctionName.startswith("bb.") ? FunctionName.substr(3) : FunctionName;
+      auto FrameSize = StackSizeMap.find(FunctionNameWithoutBB);
+      if (FrameSize != StackSizeMap.end()) {
+        stackFrameSize = FrameSize->second - 8;
+        errs() << "Using " << stackFrameSize << " as frame size for " << FunctionName << "\n";
+      }
+
+      auto It = InitializerCalls.find(CSV);
+      if (It == InitializerCalls.end()) {
+        Function *Initializer = InitializerForCSV.at(CSV);
+        TopOfStack = AllocaBuilder.CreateCall(Initializer, { AllocaBuilder.getInt64(stackFrameSize) }, "TopOfTheStack");
+      } else {
+        TopOfStack = It->second;
+      }
+
+      // Stack pointer points to the last written value.
+      // E.g. if the stack frame is allocated as TopOfStack = sp - 50, then BottomOfStack needs to be initialized as TopOfStack + 50
+      auto *GEPResult = InitializersBuilder.CreateGEP(TopOfStack, InitializersBuilder.getInt64(stackFrameSize), "BottomOfTheStack");
+      InitializeValue = cast<Instruction>(InitializersBuilder.CreatePtrToInt(GEPResult, CSVType));
+    }
+    else if (Whitelist.contains(CSV->getName())) {
+      auto It = InitializerCalls.find(CSV);
+      if (It == InitializerCalls.end()) {
+        Function *Initializer = InitializerForCSV.at(CSV);
+        InitializeValue = InitializersBuilder.CreateCall(Initializer);
+      } else {
+        InitializeValue = It->second;
+      }
     }
 
-    // Initialize the alloca
-    InitializersBuilder.SetInsertPoint(&Entry,
-                                       ++InitializerCall->getIterator());
-    InitializersBuilder.CreateStore(InitializerCall, Alloca);
+    if (InitializeValue != nullptr) {
+      // Initialize the alloca
+      InitializersBuilder.SetInsertPoint(&Entry,
+                                         ++InitializeValue->getIterator());
+      InitializersBuilder.CreateStore(InitializeValue, Alloca);
+    }
 
     // Replace users
     replaceAllUsesInFunctionWith(F, CSV, Alloca);

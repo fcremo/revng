@@ -139,6 +139,9 @@ bool FunctionCallIdentification::runOnModule(llvm::Module &M) {
                 }
                 SaveRAFound = true;
 
+                QuickMetadata QMD(Store->getContext());
+                Store->setMetadata("kill-me-with-fire", QMD.get());
+
                 // Find where the return address is being stored
                 revng_assert(LinkRegister == nullptr);
                 if (TargetCSV != nullptr) {

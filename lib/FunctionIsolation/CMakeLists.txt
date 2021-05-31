@@ -9,6 +9,8 @@ revng_add_analyses_library_internal(revngFunctionIsolation
   IsolateFunctions.cpp
   PromoteCSVs.cpp
   RemoveExceptionalCalls.cpp
+  RemoveTutteCose.cpp
+        ReplaceInitSPReg.cpp
   StructInitializers.cpp)
 
 target_link_libraries(revngFunctionIsolation

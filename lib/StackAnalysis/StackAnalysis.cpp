@@ -151,6 +151,8 @@ void commitToModel(GeneratedCodeBasicInfo &GCBI,
     {
       auto Inserter = Function.Registers.batch_insert();
       for (auto &[CSV, FRD] : FunctionSummary.RegisterSlots) {
+        // Explicitly exclude the stack pointer from arguments and return values
+        if (GCBI.isSPReg(CSV)) continue;
         auto ID = ABIRegister::fromCSVName(CSV->getName(), GCBI.arch());
         if (ID == model::Register::Invalid)
           continue;

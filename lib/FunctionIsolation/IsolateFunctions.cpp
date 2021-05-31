@@ -755,6 +755,8 @@ IFI::isolate(const model::Function &Function) {
   llvm::Function *NewFunction = CE.extractCodeRegion(CEAC);
   FunctionTags::Lifted.addTo(NewFunction);
 
+  NewFunction->addFnAttr(Attribute::NoInline);
+
   revng_assert(NewFunction != nullptr);
   NewFunction->setName(OriginalEntry->getName());
 

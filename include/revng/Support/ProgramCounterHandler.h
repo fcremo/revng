@@ -117,6 +117,10 @@ public:
 
   llvm::Value *loadPC(llvm::IRBuilder<> &Builder) const;
 
+  llvm::GlobalVariable *getAddressCSV() const {
+    return AddressCSV;
+  };
+
 protected:
   virtual void
   initializePCInternal(llvm::IRBuilder<> &Builder, MetaAddress NewPC) const = 0;

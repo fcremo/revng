@@ -292,7 +292,8 @@ def merge_dynamic(to_extend_file, source_file, output_file, base=0x400000, merge
     additional_segments_offset = align(new_program_headers_offset, 0x1000)
     for s in source_elf.segments:
       additional_segment_phdr = copy(s.header)
-      if additional_segment_phdr.p_type != "PT_LOAD":
+      if additional_segment_phdr.p_type != "PT_LOAD" or additional_segment_phdr.p_vaddr == 0x00000000003ff000:
+        print(f"Skipping segment {additional_segment_phdr}")
         continue
 
       additional_segment_content = source_elf.read_address(additional_segment_phdr.p_vaddr,

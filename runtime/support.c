@@ -357,11 +357,16 @@ void init_tracing(void) {
 void on_exit_syscall(void) {
 }
 
-void newpc(uint64_t pc,
-           uint64_t instruction_size,
-           uint32_t is_first,
-           uint8_t *vars,
-           ...) {
+void newpc(
+  uint64_t PC,
+  uint64_t PCEpoch,
+  uint64_t PCAddressSpace,
+  uint64_t PCType,
+  uint64_t inst_size,
+  uint32_t is_first,
+  char* disas, ...) {
+  // printf("-- Emulating PC %lx, type %lx, as %lx, epoch %lx:\n", PC, PCType, PCAddressSpace, PCEpoch);
+  // puts(disas);
 }
 
 #endif
@@ -403,6 +408,8 @@ void install_sigsegv_handler(void) {
   result = sigaction(SIGSEGV, &segv_handler, &default_handler);
   assert(result == 0);
 }
+
+// int main(int argc, char *argv[]) {}
 
 int main(int argc, char *argv[]) {
   // Save the program arguments for error reporting purposes
